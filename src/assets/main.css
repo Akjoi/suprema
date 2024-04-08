@@ -1,0 +1,5 @@
+@import './base.css';
+
+.cursor_pointer {
+    cursor: pointer;
+}
