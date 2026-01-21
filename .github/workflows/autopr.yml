@@ -1,0 +1,73 @@
+name: Assign curator (round robin)
+
+on:
+  pull_request:
+    types: [opened, reopened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  assign:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Select curator and update gist
+        id: curator
+        env:
+          GH_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GIST_ID: "7a36e3863455572a10ca4d0ec6fe6abe"
+        run: |
+          set -euo pipefail
+          MAX_RETRIES=5
+
+          for try in $(seq 1 $MAX_RETRIES); do
+            echo "Attempt $try"
+
+            # 1. Получаем gist
+            gist=$(curl -s -H "Authorization: token $GH_TOKEN" https://api.github.com/gists/$GIST_ID)
+            content=$(echo "$gist" | jq -r '.files["curators.json"].content')
+
+            # 2. Текущий индекс и куратор
+            index=$(echo "$content" | jq -r '.index')
+            curator=$(echo "$content" | jq -r ".curators[$index]")
+            count=$(echo "$content" | jq '.curators | length')
+            next_index=$(( (index + 1) % count ))
+
+            # update JSON
+            updated=$(echo "$content" | jq --argjson next "$next_index" '.index = $next')
+
+            # payload: content должен быть строкой JSON
+            patch_body=$(jq -n --arg content "$(echo "$updated" | jq -c '.')" \
+              '{ files: { "curators.json": { content: $content } } }')
+
+            # PATCH gist
+            status=$(curl -s -o /dev/null -w "%{http_code}" \
+              -X PATCH \
+              -H "Authorization: token $GH_TOKEN" \
+              -H "Content-Type: application/json" \
+              https://api.github.com/gists/$GIST_ID \
+              -d "$patch_body")
+
+
+            if [ "$status" = "200" ]; then
+              echo "curator=$curator" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+
+            sleep 1
+          done
+
+          echo "ERROR: failed to update gist after retries" >&2
+          exit 1
+
+      - name: Add reviewer
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.pulls.requestReviewers({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              reviewers: ["${{ steps.curator.outputs.curator }}"]
+            })
