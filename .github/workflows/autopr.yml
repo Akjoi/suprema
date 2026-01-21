@@ -2,16 +2,16 @@ name: Assign curator label on PR open
 
 on:
   pull_request:
-    types: [opened, reopened]
-
-permissions:
-  issues: write
+    types: [opened]
 
 jobs:
   assign:
     runs-on: ubuntu-latest
 
     steps:
+      ####################################################################
+      # STEP 1. Round robin + обновление Gist
+      ####################################################################
       - name: Select curator (round robin) and update gist
         id: curator
         env:
@@ -20,7 +20,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          gist=$(curl -s -H "Authorization: token $GH_TOKEN" \
+          gist=$(curl -s \
+            -H "Authorization: token $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
             https://api.github.com/gists/$GIST_ID)
 
           content=$(echo "$gist" | jq -r '.files["curators.json"].content')
@@ -39,19 +41,30 @@ jobs:
 
           curl -s -X PATCH \
             -H "Authorization: token $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
             -H "Content-Type: application/json" \
             https://api.github.com/gists/$GIST_ID \
             -d "$patch_body" >/dev/null
 
           echo "curator=$curator" >> "$GITHUB_OUTPUT"
 
+      ####################################################################
+      # STEP 2. Проставляем label через PAT (без github-script)
+      ####################################################################
       - name: Add curator label
-        uses: actions/github-script@v7
-        with:
-          script: |
-            await github.rest.issues.addLabels({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.payload.pull_request.number,
-              labels: ["curator:${{ steps.curator.outputs.curator }}"]
-            })
+        env:
+          GH_TOKEN: ${{ secrets.REPO_TOKEN }}
+          CURATOR: ${{ steps.curator.outputs.curator }}
+        run: |
+          set -euo pipefail
+
+          OWNER="${{ github.repository_owner }}"
+          REPO="${{ github.event.repository.name }}"
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          LABEL="curator:$CURATOR"
+
+          curl -s -X POST \
+            -H "Authorization: token $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$OWNER/$REPO/issues/$PR_NUMBER/labels" \
+            -d "{\"labels\":[\"$LABEL\"]}"
