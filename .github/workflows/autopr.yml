@@ -1,7 +1,7 @@
 name: Assign curator (round robin)
 
 on:
-  pull_request_target:
+  pull_request: :
     types: [opened, reopened]
 
 permissions:
@@ -64,34 +64,15 @@ jobs:
           echo "ERROR: failed to update gist after retries" >&2
           exit 1
 
-      ####################################################################
-      # STEP 2. Создаём label (если нет) и навешиваем его
-      ####################################################################
       - name: Add curator label
         uses: actions/github-script@v7
         with:
           script: |
-            const { owner, repo } = context.repo;
-            const issue_number = context.payload.pull_request.number;
-            const name = "curator:${{ steps.curator.outputs.curator }}";
-            const color = "${{ steps.curator.outputs.color }}";
-
-            // создаём label, если его нет
-            try {
-              await github.rest.issues.createLabel({
-                owner,
-                repo,
-                name,
-                color
-              });
-            } catch (e) {
-              // label уже существует — это нормально
-            }
-
-            // добавляем label к PR (лейблы копятся)
             await github.rest.issues.addLabels({
-              owner,
-              repo,
-              issue_number,
-              labels: [name]
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              labels: ["curator:Akjoi"]
             });
+
+
