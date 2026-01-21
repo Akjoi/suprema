@@ -5,13 +5,16 @@ on:
     types: [opened, reopened]
 
 permissions:
-  pull-requests: write
+  issues: write
 
 jobs:
   assign:
     runs-on: ubuntu-latest
 
     steps:
+      ####################################################################
+      # STEP 1. Round robin + обновление Gist
+      ####################################################################
       - name: Select curator and update gist
         id: curator
         env:
@@ -24,24 +27,24 @@ jobs:
           for try in $(seq 1 $MAX_RETRIES); do
             echo "Attempt $try"
 
-            # 1. Получаем gist
-            gist=$(curl -s -H "Authorization: token $GH_TOKEN" https://api.github.com/gists/$GIST_ID)
+            gist=$(curl -s -H "Authorization: token $GH_TOKEN" \
+              https://api.github.com/gists/$GIST_ID)
+
             content=$(echo "$gist" | jq -r '.files["curators.json"].content')
 
-            # 2. Текущий индекс и куратор
             index=$(echo "$content" | jq -r '.index')
-            curator=$(echo "$content" | jq -r ".curators[$index]")
+            curator=$(echo "$content" | jq -r ".curators[$index].login")
+            color=$(echo "$content" | jq -r ".curators[$index].color")
+
             count=$(echo "$content" | jq '.curators | length')
             next_index=$(( (index + 1) % count ))
 
-            # update JSON
             updated=$(echo "$content" | jq --argjson next "$next_index" '.index = $next')
 
-            # payload: content должен быть строкой JSON
-            patch_body=$(jq -n --arg content "$(echo "$updated" | jq -c '.')" \
+            patch_body=$(jq -n \
+              --arg content "$(echo "$updated" | jq -c '.')" \
               '{ files: { "curators.json": { content: $content } } }')
 
-            # PATCH gist
             status=$(curl -s -o /dev/null -w "%{http_code}" \
               -X PATCH \
               -H "Authorization: token $GH_TOKEN" \
@@ -49,9 +52,9 @@ jobs:
               https://api.github.com/gists/$GIST_ID \
               -d "$patch_body")
 
-
             if [ "$status" = "200" ]; then
               echo "curator=$curator" >> $GITHUB_OUTPUT
+              echo "color=$color" >> $GITHUB_OUTPUT
               exit 0
             fi
 
@@ -61,13 +64,34 @@ jobs:
           echo "ERROR: failed to update gist after retries" >&2
           exit 1
 
-      - name: Add reviewer
+      ####################################################################
+      # STEP 2. Создаём label (если нет) и навешиваем его
+      ####################################################################
+      - name: Add curator label
         uses: actions/github-script@v7
         with:
           script: |
-            await github.rest.pulls.requestReviewers({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: context.payload.pull_request.number,
-              reviewers: ["${{ steps.curator.outputs.curator }}"]
-            })
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+            const name = "curator:${{ steps.curator.outputs.curator }}";
+            const color = "${{ steps.curator.outputs.color }}";
+
+            // создаём label, если его нет
+            try {
+              await github.rest.issues.createLabel({
+                owner,
+                repo,
+                name,
+                color
+              });
+            } catch (e) {
+              // label уже существует — это нормально
+            }
+
+            // добавляем label к PR (лейблы копятся)
+            await github.rest.issues.addLabels({
+              owner,
+              repo,
+              issue_number,
+              labels: [name]
+            });
