@@ -1,8 +1,8 @@
-name: Assign curator (round robin)
+name: Assign curator label on PR open
 
 on:
-  pull_request: :
-    types: [opened, reopened]
+  pull_request:
+    types: [opened]
 
 permissions:
   issues: write
@@ -12,57 +12,38 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      ####################################################################
-      # STEP 1. Round robin + обновление Gist
-      ####################################################################
-      - name: Select curator and update gist
+      - name: Select curator (round robin) and update gist
         id: curator
         env:
           GH_TOKEN: ${{ secrets.GIST_TOKEN }}
           GIST_ID: "7a36e3863455572a10ca4d0ec6fe6abe"
         run: |
           set -euo pipefail
-          MAX_RETRIES=5
 
-          for try in $(seq 1 $MAX_RETRIES); do
-            echo "Attempt $try"
+          gist=$(curl -s -H "Authorization: token $GH_TOKEN" \
+            https://api.github.com/gists/$GIST_ID)
 
-            gist=$(curl -s -H "Authorization: token $GH_TOKEN" \
-              https://api.github.com/gists/$GIST_ID)
+          content=$(echo "$gist" | jq -r '.files["curators.json"].content')
 
-            content=$(echo "$gist" | jq -r '.files["curators.json"].content')
+          index=$(echo "$content" | jq -r '.index')
+          curator=$(echo "$content" | jq -r ".curators[$index].login")
 
-            index=$(echo "$content" | jq -r '.index')
-            curator=$(echo "$content" | jq -r ".curators[$index].login")
-            color=$(echo "$content" | jq -r ".curators[$index].color")
+          count=$(echo "$content" | jq '.curators | length')
+          next_index=$(( (index + 1) % count ))
 
-            count=$(echo "$content" | jq '.curators | length')
-            next_index=$(( (index + 1) % count ))
+          updated=$(echo "$content" | jq --argjson next "$next_index" '.index = $next')
 
-            updated=$(echo "$content" | jq --argjson next "$next_index" '.index = $next')
+          patch_body=$(jq -n \
+            --arg content "$(echo "$updated" | jq -c '.')" \
+            '{ files: { "curators.json": { content: $content } } }')
 
-            patch_body=$(jq -n \
-              --arg content "$(echo "$updated" | jq -c '.')" \
-              '{ files: { "curators.json": { content: $content } } }')
+          curl -s -X PATCH \
+            -H "Authorization: token $GH_TOKEN" \
+            -H "Content-Type: application/json" \
+            https://api.github.com/gists/$GIST_ID \
+            -d "$patch_body" >/dev/null
 
-            status=$(curl -s -o /dev/null -w "%{http_code}" \
-              -X PATCH \
-              -H "Authorization: token $GH_TOKEN" \
-              -H "Content-Type: application/json" \
-              https://api.github.com/gists/$GIST_ID \
-              -d "$patch_body")
-
-            if [ "$status" = "200" ]; then
-              echo "curator=$curator" >> $GITHUB_OUTPUT
-              echo "color=$color" >> $GITHUB_OUTPUT
-              exit 0
-            fi
-
-            sleep 1
-          done
-
-          echo "ERROR: failed to update gist after retries" >&2
-          exit 1
+          echo "curator=$curator" >> "$GITHUB_OUTPUT"
 
       - name: Add curator label
         uses: actions/github-script@v7
@@ -72,7 +53,5 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.payload.pull_request.number,
-              labels: ["curator:Akjoi"]
-            });
-
-
+              labels: ["curator:${{ steps.curator.outputs.curator }}"]
+            })
